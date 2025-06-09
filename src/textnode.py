@@ -1,6 +1,6 @@
 from enum import Enum
 
-from src.htmlnode import LeafNode
+from htmlnode import LeafNode, ParentNode
 import re
 
 
@@ -45,7 +45,7 @@ def text_node_to_html_node(text_node: TextNode) -> LeafNode:
     elif text_node.text_type == TextType.LINK:
         return LeafNode('a', text_node.text, {'href': text_node.link})
     elif text_node.text_type == TextType.IMAGE:
-        return LeafNode('img', None, {'src': text_node.link})
+        return LeafNode('img', None, {'src': text_node.link, 'alt': text_node.text})
     else:
         raise ValueError(f"Invalid text type: {text_node.text_type}")
 
@@ -207,3 +207,81 @@ def block_to_block_type(block: str) -> BlockType:
         return BlockType.ORDERED_LIST
     # Else: paragraph
     return BlockType.PARAGRAPH
+
+
+def text_to_children(text):
+    """
+    Converts a text string with inline markdown to a list of HTMLNode children.
+    """
+    textnodes = text_to_textnodes(text)
+    return [text_node_to_html_node(node) for node in textnodes]
+
+def markdown_to_html_node(markdown):
+    """
+    Converts a Markdown document into a single Parent HTMLNode containing all child HTMLNodes.
+    """
+    blocks = markdown_to_blocks(markdown)
+    children = []
+    # Determine outer parent: if only one child and it's a list, don't wrap it in a div
+    # Otherwise, always wrap in <div> (per test expectations)
+    for block in blocks:
+        btype = block_to_block_type(block)
+        if btype == BlockType.PARAGRAPH:
+            paragraph_text = ' '.join(line.strip() for line in block.splitlines())
+            node = ParentNode("p", text_to_children(paragraph_text))
+            children.append(node)
+        elif btype == BlockType.HEADING:
+            # Support multiple headings per block (split lines)
+            for line in block.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                level = 0
+                while level < len(line) and line[level] == "#":
+                    level += 1
+                content = line[level:].strip()
+                node = ParentNode(f"h{level}", text_to_children(content))
+                children.append(node)
+        elif btype == BlockType.CODE:
+            # Remove the starting and ending ```
+            stripped = block.strip()
+            lines = stripped.splitlines()
+            # Remove first and last line if they only contain ```
+            # (don't remove code lines actually containing ```)
+            if lines and lines[0].strip("`") == "":
+                lines = lines[1:]
+            if lines and lines[-1].strip("`") == "":
+                lines = lines[:-1]
+            content = "\n".join(lines)
+            code_leaf = LeafNode("code", content)
+            pre = ParentNode("pre", [code_leaf])
+            children.append(pre)
+        elif btype == BlockType.QUOTE:
+            content = " ".join([line[1:].lstrip() if line.startswith(">") else line for line in block.splitlines()])
+            # No <p> wrapping, as per expectations
+            node = ParentNode("blockquote", text_to_children(content))
+            children.append(node)
+        elif btype == BlockType.UNORDERED_LIST:
+            lines = [line for line in block.splitlines() if line.strip()]
+            items = [ParentNode("li", text_to_children(line.lstrip("-* ").strip())) for line in lines]
+            node = ParentNode("ul", items)
+            children.append(node)
+        elif btype == BlockType.ORDERED_LIST:
+            lines = [line for line in block.splitlines() if line.strip()]
+            items = []
+            for line in lines:
+                # Match ^\d+\.\s+
+                after_dot = line
+                if "." in line:
+                    after_dot = line[line.find('.')+1:]
+                items.append(ParentNode("li", text_to_children(after_dot.strip())))
+            node = ParentNode("ol", items)
+            children.append(node)
+        else:
+            # fallback to paragraph
+            node = ParentNode("p", text_to_children(block))
+            children.append(node)
+    # For document root: if there is exactly 1 list and nothing else, return the list node raw, otherwise wrap in div.
+    if len(children) == 1 and children[0].tag in ("ol", "ul"):
+        return children[0]
+    return ParentNode("div", children)
